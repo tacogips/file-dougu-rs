@@ -1,14 +1,217 @@
-use anyhow::{anyhow, Error, Result};
-use cloud_storage::bucket::{Location, MultiRegion};
-use cloud_storage::{Bucket, ListRequest, NewBucket, Object};
+use crate::compression::*;
 
+use crate::mime;
+use crate::mime::MimeType;
+use backoff::future::retry;
+use backoff::{Error as BackoffError, ExponentialBackoff};
+use cloud_storage::bucket::{Location, MultiRegion};
+use cloud_storage::{Bucket, Error as CloudStorageError, ListRequest, NewBucket, Object};
 use futures::future;
 use futures::stream::TryStreamExt;
 use futures_util::future::TryFutureExt;
+use lazy_static::lazy_static;
 use log;
+use regex::Regex;
 use std::convert::Into;
+use std::fmt;
+use thiserror::Error;
+use url::Url;
 
-use crate::mime::MimeType;
+#[derive(Error, Debug)]
+pub enum FileUtilGcsError {
+    #[error("gcs buclet path error: {0}")]
+    GcsInvalidBucketPassError(String),
+
+    #[error("url parse error: {0}")]
+    UrlParseError(#[from] url::ParseError),
+
+    #[error("srtorage acess error: {0}")]
+    StorageAccessError(#[from] CloudStorageError),
+
+    #[error("invalid gcs url: {0}")]
+    InvalidGcsUrl(String),
+
+    #[error("compression error: {0}")]
+    CompressionError(#[from] CompressionError),
+}
+pub type Result<T> = std::result::Result<T, FileUtilGcsError>;
+
+lazy_static! {
+    static ref GCS_BUCKET_RE: Regex = Regex::new(r"gs://(?P<bucket>.*?)/(?P<name>.*)").unwrap();
+}
+
+pub struct GcsFile {
+    bucket: String,
+    name: String,
+}
+
+impl GcsFile {
+    fn parse_bucket_and_name_from_url(url: &Url) -> Result<(String, String)> {
+        GCS_BUCKET_RE.captures(url.as_str()).map_or(
+            Err(FileUtilGcsError::GcsInvalidBucketPassError(
+                url.as_str().to_string(),
+            )),
+            |captured| {
+                let bucket = captured["bucket"].to_string();
+                let name = captured["name"].to_string();
+                if bucket.is_empty()
+                    || name.is_empty()
+                    || name.starts_with("/")
+                    || name.ends_with("/")
+                {
+                    Err(FileUtilGcsError::InvalidGcsUrl(url.as_str().to_string()))
+                } else {
+                    Ok((bucket, name))
+                }
+            },
+        )
+    }
+
+    pub fn new(maybe_url_string: String) -> Result<Self> {
+        let url = Url::parse(maybe_url_string.as_str())?;
+        Self::new_with_url(&url)
+    }
+
+    pub async fn list_objects_with_retry(
+        &self,
+        backoff: Option<ExponentialBackoff>,
+    ) -> Result<Vec<String>> {
+        retry(backoff.unwrap_or_default(), || async {
+            let objects = match list_objects(&self.bucket, &self.name).await {
+                Ok(objects) => objects,
+                Err(e) => {
+                    log::debug!("list object failed {}", e);
+                    return Err(BackoffError::Transient(e));
+                }
+            };
+
+            Ok(objects
+                .into_iter()
+                .map(|obj| {
+                    Self {
+                        bucket: obj.bucket,
+                        name: obj.name,
+                    }
+                    .to_string()
+                })
+                .collect())
+        })
+        .await
+    }
+
+    pub fn new_with_url(url: &Url) -> Result<Self> {
+        let url_str = url.as_str();
+        if !url_str.starts_with("gs://") {
+            return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+                "it's not gs address {}",
+                url_str
+            )));
+        }
+
+        //TODO(tacogips) actually needed?
+        if url_str.ends_with("/") {
+            return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+                "gcs path must not be ends with '/' {}",
+                url_str
+            )));
+        }
+
+        let (bucket, name) = Self::parse_bucket_and_name_from_url(url)?;
+
+        Ok(Self { bucket, name })
+    }
+
+    pub async fn is_exists(bucket: &str, name: &str) -> Result<bool> {
+        object_exists(bucket, name).await
+    }
+
+    pub async fn is_exists_with_retry(&self, backoff: Option<ExponentialBackoff>) -> Result<bool> {
+        retry(backoff.unwrap_or_default(), || async {
+            match Self::is_exists(&self.bucket, &self.name).await {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    log::debug!(
+                        "exists Retring. [{}/{}] error:{:?}",
+                        self.bucket,
+                        self.name,
+                        e
+                    );
+                    Err(BackoffError::Transient(e))
+                }
+            }
+        })
+        .await
+    }
+
+    pub async fn download(bucket: &str, name: &str) -> Result<Option<Vec<u8>>> {
+        if let Ok(true) = object_exists(bucket, name).await {
+            download_object(&bucket, &name).await.map(|body| Some(body))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn download_with_retry(
+        &self,
+        backoff: Option<ExponentialBackoff>,
+        decompression: Option<Compression>,
+    ) -> Result<Option<Vec<u8>>> {
+        let contents: Option<Vec<u8>> = retry(backoff.unwrap_or_default(), || async {
+            match GcsFile::download(&self.bucket, &self.name).await {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    log::debug!(
+                        "download from gcs failed. Retring. [{}/{}] error:{:?}",
+                        self.bucket,
+                        self.name,
+                        e
+                    );
+                    Err(BackoffError::Transient(e))
+                }
+            }
+        })
+        .await?;
+        let result = decompress_opt(contents, decompression)?;
+        Ok(result)
+    }
+
+    pub async fn write_with_retry(
+        &self,
+        body: Vec<u8>,
+        mime_type: mime::MimeType,
+        backoff: Option<ExponentialBackoff>,
+        compression: Option<Compression>,
+    ) -> Result<()> {
+        let body = compress_opt(body, compression)?;
+
+        retry(backoff.unwrap_or_default(), || async {
+            create_object(&self.bucket, &self.name, body.to_vec(), mime_type.clone())
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    log::debug!("gcs write error {:?}", e);
+                    BackoffError::Transient(e)
+                })
+        })
+        .await
+    }
+
+    pub async fn delete_with_retry(&self, backoff: Option<ExponentialBackoff>) -> Result<()> {
+        retry(backoff.unwrap_or_default(), || async {
+            delete_object(&self.bucket, &self.name)
+                .await
+                .map(|_| ())
+                .map_err(BackoffError::Transient)
+        })
+        .await
+    }
+}
+
+impl fmt::Display for GcsFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "gs://{}/{}", self.bucket, self.name)
+    }
+}
 
 pub async fn object_exists(bucket: &str, path: &str) -> Result<bool> {
     find_object(bucket, path)
@@ -66,7 +269,10 @@ fn list_prefix_request(prefix: String) -> ListRequest {
 
 pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
     if name.ends_with("/") {
-        return Err(anyhow!("its not object path {}", name));
+        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            "path must not be ends with `/` : {}",
+            name
+        )));
     }
 
     //TODO(tacogips) it's unsafficient to use `await` for performance
@@ -87,7 +293,10 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
 
 pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
     if name.ends_with("/") {
-        return Err(anyhow!("its not object path {}", name));
+        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            "path must not be ends with `/` : {}",
+            name
+        )));
     }
 
     //TODO(tacogips) it's unsafficient to use `await` for performance
@@ -104,10 +313,14 @@ pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
 
 pub async fn download_object(bucket: &str, name: &str) -> Result<Vec<u8>> {
     if name.ends_with("/") {
-        return Err(anyhow!("it's not gs file path {}", name));
+        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            "path must not be ends with `/` : {}",
+            name
+        )));
     }
 
-    Object::download(bucket, name).await.map_err(Error::msg)
+    let result = Object::download(bucket, name).await?;
+    Ok(result)
 }
 
 pub async fn create_object(
@@ -116,13 +329,13 @@ pub async fn create_object(
     body: Vec<u8>,
     mime_type: MimeType,
 ) -> Result<Object> {
-    Object::create(bucket, body, path, mime_type.into())
-        .await
-        .map_err(Error::msg)
+    let object = Object::create(bucket, body, path, mime_type.into()).await?;
+    Ok(object)
 }
 
 pub async fn delete_object(bucket: &str, path: &str) -> Result<()> {
-    Object::delete(bucket, path).await.map_err(Error::msg)
+    Object::delete(bucket, path).await?;
+    Ok(())
 }
 
 pub async fn create_bucket(bucket: &str) -> Result<Bucket> {
@@ -132,7 +345,8 @@ pub async fn create_bucket(bucket: &str) -> Result<Bucket> {
         ..Default::default()
     };
 
-    Bucket::create(&new_bucket).await.map_err(Error::msg)
+    let bucket = Bucket::create(&new_bucket).await?;
+    Ok(bucket)
 }
 
 pub async fn bucket_exists(bucket: &str) -> bool {
@@ -140,7 +354,7 @@ pub async fn bucket_exists(bucket: &str) -> bool {
         .and_then(|found_or_not| future::ok(found_or_not.is_some()))
         .await;
     a.unwrap_or_else(|e| {
-        log::warn!("bucket exists error {}", e);
+        log::debug!("bucket exists error {}", e);
         false
     })
 }
@@ -155,11 +369,10 @@ pub async fn find_bucket(bucket: &str) -> Result<Option<Bucket>> {
 /// cloud-storage.rs has a problem with the global reqwest Client
 /// that cause `dispatch dropped without returning error` error.
 /// https://github.com/hyperium/hyper/issues/2112
-/// We use Mutex lock that let just single test run to avoid it.
+/// We use Mutex lock to let only single test run to avoid it.
 #[cfg(test)]
 mod tests {
 
-    use anyhow::{anyhow, Error, Result};
     use lazy_static::lazy_static;
     use std::env;
     use std::sync::Mutex;
@@ -168,13 +381,13 @@ mod tests {
 
     macro_rules! env_value {
         ($env_key:expr) => {
-            env::var($env_key).map_err(|e| anyhow!("env {} not found. Err:{:?}", $env_key, e))
+            env::var($env_key).expect(&format!("env {} not found.", $env_key))
         };
     }
     const FILE_UTIL_TEST_BUCKET_NAME_ENV: &str = "FILE_UTIL_TEST_GCS_BUCKET_ENV";
 
     fn test_bucket_name() -> String {
-        env_value!(FILE_UTIL_TEST_BUCKET_NAME_ENV).unwrap()
+        env_value!(FILE_UTIL_TEST_BUCKET_NAME_ENV)
     }
 
     //use test_util::TEST_BUCKET_NAME;
@@ -203,7 +416,7 @@ mod tests {
             "assert file is not exists yet.",
         );
 
-        let body_str = String::from("これはテストabc;[[;!");
+        let body_str = String::from("this is a test &&%2f %;[[;!");
         assert_eq!(
             true,
             super::create_object(
@@ -219,15 +432,17 @@ mod tests {
 
         assert_eq!(
             true,
-            super::object_exists(TEST_BUCKET_NAME, &test_objects_name)
+            super::object_exists(&test_bucket_name(), &test_objects_name)
                 .await
                 .unwrap(),
             "find the created file ",
         );
 
+        //TODO(tacogips) test to get contents here
+
         assert_eq!(
             true,
-            super::delete_object(TEST_BUCKET_NAME, &test_objects_name)
+            super::delete_object(&test_bucket_name(), &test_objects_name)
                 .await
                 .is_ok(),
             "remove created file ",

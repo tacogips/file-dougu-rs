@@ -1,4 +1,4 @@
-use anyhow::Result;
+use super::Result;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
