@@ -1,5 +1,5 @@
 [package]
-name = "fileutil-rs"
+name = "file-dougu"
 version = "0.1.0"
 edition = "2018"
 
