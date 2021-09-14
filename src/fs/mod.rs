@@ -37,11 +37,7 @@ impl FileAccessor {
             Err(e) => Err(e),
         }
     }
-    pub fn write(
-        &self,
-        body: Vec<u8>,
-        compression: Option<compression::Compression>,
-    ) -> Result<()> {
+    pub fn write(&self, body: &[u8], compression: Option<compression::Compression>) -> Result<()> {
         let body = compression::compress_opt(body, compression)?;
         fs::write(&self.path, body)?;
         Ok(())

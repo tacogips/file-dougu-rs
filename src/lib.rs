@@ -123,7 +123,7 @@ pub async fn is_exists(url_or_path_str: &str, backoff: Option<ExponentialBackoff
 
 pub async fn write_contents<'a>(
     url_or_path_str: &'a str,
-    body: Vec<u8>,
+    body: &[u8],
     mime_type: mime::MimeType,
     backoff: Option<ExponentialBackoff>,
     compression: Option<compression::Compression>,

@@ -177,7 +177,7 @@ impl GcsFile {
 
     pub async fn write_with_retry(
         &self,
-        body: Vec<u8>,
+        body: &[u8],
         mime_type: mime::MimeType,
         backoff: Option<ExponentialBackoff>,
         compression: Option<Compression>,

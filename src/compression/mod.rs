@@ -57,11 +57,11 @@ pub(crate) fn decompress_opt(
     }
 }
 
-pub(crate) fn compress_opt(data: Vec<u8>, compression: Option<Compression>) -> Result<Vec<u8>> {
+pub(crate) fn compress_opt(data: &[u8], compression: Option<Compression>) -> Result<Vec<u8>> {
     match compression {
-        None => Ok(data),
+        None => Ok(data.to_vec()),
         Some(compression) => {
-            let data = compression.compress(data.as_slice())?;
+            let data = compression.compress(data)?;
             Ok(data)
         }
     }
