@@ -80,7 +80,7 @@ impl GcsFile {
             let objects = match list_objects(&self.bucket, &self.name).await {
                 Ok(objects) => objects,
                 Err(e) => {
-                    log::debug!("list object failed {}", e);
+                    log::warn!("list object failed {}", e);
                     return Err(BackoffError::Transient(e));
                 }
             };
@@ -103,7 +103,7 @@ impl GcsFile {
         let url_str = url.as_str();
         if !url_str.starts_with("gs://") {
             return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
-                "it's not gs address {}",
+                "it is not a valid gs address {}",
                 url_str
             )));
         }
@@ -130,7 +130,7 @@ impl GcsFile {
             match Self::is_exists(&self.bucket, &self.name).await {
                 Ok(v) => Ok(v),
                 Err(e) => {
-                    log::debug!(
+                    log::warn!(
                         "exists Retring. [{}/{}] error:{:?}",
                         self.bucket,
                         self.name,
@@ -160,7 +160,7 @@ impl GcsFile {
             match GcsFile::download(&self.bucket, &self.name).await {
                 Ok(v) => Ok(v),
                 Err(e) => {
-                    log::debug!(
+                    log::warn!(
                         "download from gcs failed. Retring. [{}/{}] error:{:?}",
                         self.bucket,
                         self.name,
@@ -189,7 +189,7 @@ impl GcsFile {
                 .await
                 .map(|_| ())
                 .map_err(|e| {
-                    log::debug!("gcs write error {:?}", e);
+                    log::warn!("gcs write error {:?}", e);
                     BackoffError::Transient(e)
                 })
         })
@@ -354,7 +354,7 @@ pub async fn bucket_exists(bucket: &str) -> bool {
         .and_then(|found_or_not| future::ok(found_or_not.is_some()))
         .await;
     a.unwrap_or_else(|e| {
-        log::debug!("bucket exists error {}", e);
+        log::warn!("bucket exists error {} {}", bucket, e);
         false
     })
 }
