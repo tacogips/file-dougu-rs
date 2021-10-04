@@ -20,7 +20,7 @@ use url::Url;
 #[derive(Error, Debug)]
 pub enum FileUtilGcsError {
     #[error("gcs buclet path error: {0}")]
-    GcsInvalidBucketPassError(String),
+    GcsInvalidBucketPathError(String),
 
     #[error("url parse error: {0}")]
     UrlParseError(#[from] url::ParseError),
@@ -48,7 +48,7 @@ pub struct GcsFile {
 impl GcsFile {
     fn parse_bucket_and_name_from_url(url: &Url) -> Result<(String, String)> {
         GCS_BUCKET_RE.captures(url.as_str()).map_or(
-            Err(FileUtilGcsError::GcsInvalidBucketPassError(
+            Err(FileUtilGcsError::GcsInvalidBucketPathError(
                 url.as_str().to_string(),
             )),
             |captured| {
@@ -102,7 +102,7 @@ impl GcsFile {
     pub fn new_with_url(url: &Url) -> Result<Self> {
         let url_str = url.as_str();
         if !url_str.starts_with("gs://") {
-            return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
                 "it's not gs address {}",
                 url_str
             )));
@@ -110,7 +110,7 @@ impl GcsFile {
 
         //TODO(tacogips) actually needed?
         if url_str.ends_with("/") {
-            return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
                 "gcs path must not be ends with '/' {}",
                 url_str
             )));
@@ -269,7 +269,7 @@ fn list_prefix_request(prefix: String) -> ListRequest {
 
 pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
     if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
             "path must not be ends with `/` : {}",
             name
         )));
@@ -293,7 +293,7 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
 
 pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
     if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
             "path must not be ends with `/` : {}",
             name
         )));
@@ -313,7 +313,7 @@ pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
 
 pub async fn download_object(bucket: &str, name: &str) -> Result<Vec<u8>> {
     if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
             "path must not be ends with `/` : {}",
             name
         )));
