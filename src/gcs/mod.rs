@@ -20,7 +20,7 @@ use url::Url;
 #[derive(Error, Debug)]
 pub enum FileUtilGcsError {
     #[error("gcs buclet path error: {0}")]
-    GcsInvalidBucketPassError(String),
+    GcsInvalidBucketPathError(String),
 
     #[error("url parse error: {0}")]
     UrlParseError(#[from] url::ParseError),
@@ -40,6 +40,7 @@ lazy_static! {
     static ref GCS_BUCKET_RE: Regex = Regex::new(r"gs://(?P<bucket>.*?)/(?P<name>.*)").unwrap();
 }
 
+#[derive(Debug, PartialEq)]
 pub struct GcsFile {
     bucket: String,
     name: String,
@@ -48,7 +49,7 @@ pub struct GcsFile {
 impl GcsFile {
     fn parse_bucket_and_name_from_url(url: &Url) -> Result<(String, String)> {
         GCS_BUCKET_RE.captures(url.as_str()).map_or(
-            Err(FileUtilGcsError::GcsInvalidBucketPassError(
+            Err(FileUtilGcsError::GcsInvalidBucketPathError(
                 url.as_str().to_string(),
             )),
             |captured| {
@@ -101,16 +102,16 @@ impl GcsFile {
 
     pub fn new_with_url(url: &Url) -> Result<Self> {
         let url_str = url.as_str();
+
         if !url_str.starts_with("gs://") {
-            return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
                 "it's not gs address {}",
                 url_str
             )));
         }
-
         //TODO(tacogips) actually needed?
         if url_str.ends_with("/") {
-            return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
                 "gcs path must not be ends with '/' {}",
                 url_str
             )));
@@ -269,7 +270,7 @@ fn list_prefix_request(prefix: String) -> ListRequest {
 
 pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
     if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
             "path must not be ends with `/` : {}",
             name
         )));
@@ -293,7 +294,7 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
 
 pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
     if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
             "path must not be ends with `/` : {}",
             name
         )));
@@ -313,7 +314,7 @@ pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
 
 pub async fn download_object(bucket: &str, name: &str) -> Result<Vec<u8>> {
     if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPassError(format!(
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
             "path must not be ends with `/` : {}",
             name
         )));
@@ -373,10 +374,12 @@ pub async fn find_bucket(bucket: &str) -> Result<Option<Bucket>> {
 #[cfg(test)]
 mod tests {
 
+    use super::GcsFile;
     use lazy_static::lazy_static;
     use std::env;
     use std::sync::Mutex;
     use tokio;
+    use url::Url;
     use uuid::Uuid;
 
     macro_rules! env_value {
@@ -390,11 +393,11 @@ mod tests {
         env_value!(FILE_UTIL_TEST_BUCKET_NAME_ENV)
     }
 
-    //use test_util::TEST_BUCKET_NAME;
     lazy_static! {
         static ref TEST_BUCKET_MUTEX: Mutex<()> = Mutex::new(());
     }
 
+    #[cfg(feature = "cloud_test")]
     #[tokio::test]
     async fn bucket_exists() {
         let _lock = TEST_BUCKET_MUTEX.lock();
@@ -403,6 +406,7 @@ mod tests {
         assert_eq!(true, actual)
     }
 
+    #[cfg(feature = "cloud_test")]
     #[tokio::test]
     async fn object_exists_create_delete() {
         let _lock = TEST_BUCKET_MUTEX.lock();
@@ -446,6 +450,23 @@ mod tests {
                 .await
                 .is_ok(),
             "remove created file ",
+        );
+    }
+
+    #[test]
+    fn parse_gcs_file() {
+        let url = Url::parse("gs://zdb_test/zdb").unwrap();
+        let result = GcsFile::new_with_url(&url);
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        assert_eq!(
+            result,
+            GcsFile {
+                bucket: "zdb_test".to_string(),
+                name: "zdb".to_string(),
+            }
         );
     }
 }
