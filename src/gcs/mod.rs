@@ -80,7 +80,12 @@ impl GcsFile {
         backoff: Option<ExponentialBackoff>,
     ) -> Result<Vec<String>> {
         retry(backoff.unwrap_or_default(), || async {
-            let objects = match list_objects(&self.bucket, &self.name).await {
+            let name = if self.trailing_slash {
+                self.name.to_string()
+            } else {
+                format!("{}/", self.name)
+            };
+            let objects = match list_objects(&self.bucket, &name).await {
                 Ok(objects) => objects,
                 Err(e) => {
                     log::warn!("list object failed {}", e);
@@ -128,13 +133,16 @@ impl GcsFile {
         })
     }
 
-    pub async fn is_exists(bucket: &str, name: &str) -> Result<bool> {
-        object_exists(bucket, name).await
-    }
-
     pub async fn is_exists_with_retry(&self, backoff: Option<ExponentialBackoff>) -> Result<bool> {
+        if self.trailing_slash {
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
+                "object path must not be ends with `/` : {}",
+                self.name
+            )));
+        }
+
         retry(backoff.unwrap_or_default(), || async {
-            match Self::is_exists(&self.bucket, &self.name).await {
+            match object_exists(&self.bucket, &self.name).await {
                 Ok(v) => Ok(v),
                 Err(e) => {
                     log::warn!(
@@ -150,7 +158,7 @@ impl GcsFile {
         .await
     }
 
-    pub async fn download(bucket: &str, name: &str) -> Result<Option<Vec<u8>>> {
+    async fn download(bucket: &str, name: &str) -> Result<Option<Vec<u8>>> {
         if let Ok(true) = object_exists(bucket, name).await {
             download_object(&bucket, &name).await.map(|body| Some(body))
         } else {
@@ -163,6 +171,13 @@ impl GcsFile {
         backoff: Option<ExponentialBackoff>,
         decompression: Option<Compression>,
     ) -> Result<Option<Vec<u8>>> {
+        if self.trailing_slash {
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
+                "object path must not be ends with `/` : {}",
+                self.name
+            )));
+        }
+
         let contents: Option<Vec<u8>> = retry(backoff.unwrap_or_default(), || async {
             match GcsFile::download(&self.bucket, &self.name).await {
                 Ok(v) => Ok(v),
@@ -189,6 +204,13 @@ impl GcsFile {
         backoff: Option<ExponentialBackoff>,
         compression: Option<Compression>,
     ) -> Result<()> {
+        if self.trailing_slash {
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
+                "object path must not be ends with `/` : {}",
+                self.name
+            )));
+        }
+
         let body = compress_opt(body, compression)?;
 
         retry(backoff.unwrap_or_default(), || async {
@@ -300,13 +322,6 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
 }
 
 pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
-    if name.ends_with("/") {
-        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
-            "path must not be ends with `/` : {}",
-            name
-        )));
-    }
-
     //TODO(tacogips) it's unsafficient to use `await` for performance
     let object_chunks = Object::list(bucket, list_prefix_request(name.to_string()))
         .and_then(|objs_stream| objs_stream.try_collect::<Vec<_>>())
@@ -322,7 +337,7 @@ pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
 pub async fn download_object(bucket: &str, name: &str) -> Result<Vec<u8>> {
     if name.ends_with("/") {
         return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
-            "path must not be ends with `/` : {}",
+            "object path must not be ends with `/` : {}",
             name
         )));
     }
@@ -342,6 +357,13 @@ pub async fn create_object(
 }
 
 pub async fn delete_object(bucket: &str, path: &str) -> Result<()> {
+    if path.ends_with("/") {
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
+            "object path must not be ends with `/` : {}",
+            path
+        )));
+    }
+
     Object::delete(bucket, path).await?;
     Ok(())
 }
@@ -385,9 +407,7 @@ mod tests {
     use lazy_static::lazy_static;
     use std::env;
     use std::sync::Mutex;
-    use tokio;
     use url::Url;
-    use uuid::Uuid;
 
     macro_rules! env_value {
         ($env_key:expr) => {
