@@ -109,14 +109,6 @@ impl GcsFile {
                 url_str
             )));
         }
-        //TODO(tacogips) actually needed?
-        if url_str.ends_with("/") {
-            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
-                "gcs path must not be ends with '/' {}",
-                url_str
-            )));
-        }
-
         let (bucket, name) = Self::parse_bucket_and_name_from_url(url)?;
 
         Ok(Self { bucket, name })
