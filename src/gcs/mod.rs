@@ -44,10 +44,11 @@ lazy_static! {
 pub struct GcsFile {
     bucket: String,
     name: String,
+    trailing_slash: bool,
 }
 
 impl GcsFile {
-    fn parse_bucket_and_name_from_url(url: &Url) -> Result<(String, String)> {
+    fn parse_bucket_and_name_from_url(url: &Url) -> Result<(String, String, bool)> {
         GCS_BUCKET_RE.captures(url.as_str()).map_or(
             Err(FileUtilGcsError::GcsInvalidBucketPathError(
                 url.as_str().to_string(),
@@ -58,12 +59,12 @@ impl GcsFile {
                 if bucket.is_empty() || name.is_empty() || name.starts_with("/") {
                     Err(FileUtilGcsError::InvalidGcsUrl(url.as_str().to_string()))
                 } else {
-                    let name = if name.ends_with("/") {
-                        name[0..name.len() - 1].to_string()
+                    let (name, trailing_slash) = if name.ends_with("/") {
+                        (name[0..name.len() - 1].to_string(), true)
                     } else {
-                        name
+                        (name, false)
                     };
-                    Ok((bucket, name))
+                    Ok((bucket, name, trailing_slash))
                 }
             },
         )
@@ -90,9 +91,17 @@ impl GcsFile {
             Ok(objects
                 .into_iter()
                 .map(|obj| {
+                    let name = obj.name;
+                    let (name, trailing_slash) = if name.ends_with("/") {
+                        (name[0..name.len() - 1].to_string(), true)
+                    } else {
+                        (name, false)
+                    };
+
                     Self {
                         bucket: obj.bucket,
-                        name: obj.name,
+                        trailing_slash,
+                        name,
                     }
                     .to_string()
                 })
@@ -110,9 +119,13 @@ impl GcsFile {
                 url_str
             )));
         }
-        let (bucket, name) = Self::parse_bucket_and_name_from_url(url)?;
+        let (bucket, name, trailing_slash) = Self::parse_bucket_and_name_from_url(url)?;
 
-        Ok(Self { bucket, name })
+        Ok(Self {
+            bucket,
+            name,
+            trailing_slash,
+        })
     }
 
     pub async fn is_exists(bucket: &str, name: &str) -> Result<bool> {
@@ -203,7 +216,8 @@ impl GcsFile {
 
 impl fmt::Display for GcsFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "gs://{}/{}", self.bucket, self.name)
+        let trailing_slash = if self.trailing_slash { "/" } else { "" };
+        write!(f, "gs://{}/{}{}", self.bucket, self.name, trailing_slash)
     }
 }
 
@@ -459,6 +473,7 @@ mod tests {
             GcsFile {
                 bucket: "zdb_test".to_string(),
                 name: "zdb".to_string(),
+                trailing_slash: false,
             }
         );
     }
@@ -476,12 +491,13 @@ mod tests {
             GcsFile {
                 bucket: "zdb_test".to_string(),
                 name: "zdb/path".to_string(),
+                trailing_slash: false,
             }
         );
     }
 
     #[test]
-    fn parse_gcs_file_dir() {
+    fn parse_gcs_file_dir_1() {
         let url = Url::parse("gs://zdb_test/zdb/").unwrap();
         let result = GcsFile::new_with_url(&url);
 
@@ -493,6 +509,25 @@ mod tests {
             GcsFile {
                 bucket: "zdb_test".to_string(),
                 name: "zdb".to_string(),
+                trailing_slash: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_gcs_file_dir_2() {
+        let url = Url::parse("gs://zdb_test/zdb/subpath/").unwrap();
+        let result = GcsFile::new_with_url(&url);
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        assert_eq!(
+            result,
+            GcsFile {
+                bucket: "zdb_test".to_string(),
+                name: "zdb/subpath".to_string(),
+                trailing_slash: true,
             }
         );
     }
