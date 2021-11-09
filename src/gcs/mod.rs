@@ -55,13 +55,14 @@ impl GcsFile {
             |captured| {
                 let bucket = captured["bucket"].to_string();
                 let name = captured["name"].to_string();
-                if bucket.is_empty()
-                    || name.is_empty()
-                    || name.starts_with("/")
-                    || name.ends_with("/")
-                {
+                if bucket.is_empty() || name.is_empty() || name.starts_with("/") {
                     Err(FileUtilGcsError::InvalidGcsUrl(url.as_str().to_string()))
                 } else {
+                    let name = if name.ends_with("/") {
+                        name[0..name.len() - 1].to_string()
+                    } else {
+                        name
+                    };
                     Ok((bucket, name))
                 }
             },
@@ -446,8 +447,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_gcs_file() {
+    fn parse_gcs_file_1() {
         let url = Url::parse("gs://zdb_test/zdb").unwrap();
+        let result = GcsFile::new_with_url(&url);
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        assert_eq!(
+            result,
+            GcsFile {
+                bucket: "zdb_test".to_string(),
+                name: "zdb".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_gcs_file_2() {
+        let url = Url::parse("gs://zdb_test/zdb/path").unwrap();
+        let result = GcsFile::new_with_url(&url);
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        assert_eq!(
+            result,
+            GcsFile {
+                bucket: "zdb_test".to_string(),
+                name: "zdb/path".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_gcs_file_dir() {
+        let url = Url::parse("gs://zdb_test/zdb/").unwrap();
         let result = GcsFile::new_with_url(&url);
 
         assert!(result.is_ok());
