@@ -81,9 +81,9 @@ impl GcsFile {
     ) -> Result<Vec<String>> {
         retry(backoff.unwrap_or_default(), || async {
             let name = if self.trailing_slash {
-                self.name.to_string()
-            } else {
                 format!("{}/", self.name)
+            } else {
+                self.name.to_string()
             };
             let objects = match list_objects(&self.bucket, &name).await {
                 Ok(objects) => objects,
