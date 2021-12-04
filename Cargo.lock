@@ -183,6 +183,7 @@ dependencies = [
  "backoff",
  "bytes",
  "cloud-storage",
+ "dotenv",
  "flate2",
  "futures",
  "futures-util",
