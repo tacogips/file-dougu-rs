@@ -9,6 +9,7 @@ default = ["gcs","web","fs"]
 gcs = ["cloud-storage"]
 fs = []
 web = ["reqwest"]
+cloud_test = []
 
 [dependencies]
 lazy_static = "1.4"
@@ -34,4 +35,5 @@ default-features = false
 [dev-dependencies]
 tokio-test = "0.4"
 uuid = {version = "0.8" , features =["v4"]}
+dotenv = "0.15"
 

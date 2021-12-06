@@ -5,7 +5,10 @@ use crate::mime::MimeType;
 use backoff::future::retry;
 use backoff::{Error as BackoffError, ExponentialBackoff};
 use cloud_storage::bucket::{Location, MultiRegion};
-use cloud_storage::{Bucket, Error as CloudStorageError, ListRequest, NewBucket, Object};
+use cloud_storage::{
+    Bucket, Error as CloudStorageError, ListRequest, NewBucket, Object,
+    Reason as CloudStorageErrorReason,
+};
 use futures::future;
 use futures::stream::TryStreamExt;
 use futures_util::future::TryFutureExt;
@@ -243,10 +246,32 @@ impl fmt::Display for GcsFile {
     }
 }
 
-pub async fn object_exists(bucket: &str, path: &str) -> Result<bool> {
-    find_object(bucket, path)
-        .await
-        .and_then(|object_if_found| Ok(object_if_found.is_some()))
+pub async fn object_exists(bucket: &str, name: &str) -> Result<bool> {
+    if name.ends_with("/") {
+        return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
+            "object path must not be ends with `/` : {}",
+            name
+        )));
+    }
+
+    log::debug!("Class B Object::read() in object_exists() ");
+    let result = Object::read(bucket, name).await;
+
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) => match e {
+            CloudStorageError::Google(error_response) => {
+                if error_response.errors_has_reason(&CloudStorageErrorReason::NotFound) {
+                    Ok(false)
+                } else {
+                    Err(FileUtilGcsError::StorageAccessError(
+                        CloudStorageError::Google(error_response),
+                    ))
+                }
+            }
+            _ => Err(FileUtilGcsError::StorageAccessError(e)),
+        },
+    }
 }
 
 fn list_prefix_request(prefix: String) -> ListRequest {
@@ -305,6 +330,7 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
         )));
     }
 
+    log::debug!("Class A Object::list() in find_object() ... that  trying reduing..");
     //TODO(tacogips) it's unsafficient to use `await` for performance
     let object_chunks = Object::list(bucket, list_prefix_request(name.to_string()))
         .and_then(|objs_stream| objs_stream.try_collect::<Vec<_>>())
@@ -323,6 +349,8 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
 
 pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
     //TODO(tacogips) it's unsafficient to use `await` for performance
+
+    log::debug!("Class A Object::list() in list_object()");
     let object_chunks = Object::list(bucket, list_prefix_request(name.to_string()))
         .and_then(|objs_stream| objs_stream.try_collect::<Vec<_>>())
         .await?;
@@ -352,6 +380,7 @@ pub async fn create_object(
     body: Vec<u8>,
     mime_type: MimeType,
 ) -> Result<Object> {
+    log::debug!("Class A Object::create() in create_object()");
     let object = Object::create(bucket, body, path, mime_type.into()).await?;
     Ok(object)
 }
@@ -375,6 +404,7 @@ pub async fn create_bucket(bucket: &str) -> Result<Bucket> {
         ..Default::default()
     };
 
+    log::debug!("Class A Bucket::create() in create_bucket()");
     let bucket = Bucket::create(&new_bucket).await?;
     Ok(bucket)
 }
@@ -404,10 +434,12 @@ pub async fn find_bucket(bucket: &str) -> Result<Option<Bucket>> {
 mod tests {
 
     use super::GcsFile;
+    use dotenv::dotenv;
     use lazy_static::lazy_static;
     use std::env;
     use std::sync::Mutex;
     use url::Url;
+    use uuid::Uuid;
 
     macro_rules! env_value {
         ($env_key:expr) => {
@@ -417,6 +449,7 @@ mod tests {
     const FILE_UTIL_TEST_BUCKET_NAME_ENV: &str = "FILE_UTIL_TEST_GCS_BUCKET_ENV";
 
     fn test_bucket_name() -> String {
+        dotenv::from_filename(".env_test").ok();
         env_value!(FILE_UTIL_TEST_BUCKET_NAME_ENV)
     }
 
