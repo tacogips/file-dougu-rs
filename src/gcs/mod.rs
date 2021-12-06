@@ -254,7 +254,7 @@ pub async fn object_exists(bucket: &str, name: &str) -> Result<bool> {
         )));
     }
 
-    log::info!("Class B??? Object::read() in object_exists() ");
+    log::debug!("Class B Object::read() in object_exists() ");
     let result = Object::read(bucket, name).await;
 
     match result {
@@ -330,8 +330,7 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
         )));
     }
 
-    //TODO(tacogios) Class A Operation
-    log::info!("Class A Object::list() in find_object() ... that  trying reduing..");
+    log::debug!("Class A Object::list() in find_object() ... that  trying reduing..");
     //TODO(tacogips) it's unsafficient to use `await` for performance
     let object_chunks = Object::list(bucket, list_prefix_request(name.to_string()))
         .and_then(|objs_stream| objs_stream.try_collect::<Vec<_>>())
@@ -351,7 +350,7 @@ pub async fn find_object(bucket: &str, name: &str) -> Result<Option<Object>> {
 pub async fn list_objects(bucket: &str, name: &str) -> Result<Vec<Object>> {
     //TODO(tacogips) it's unsafficient to use `await` for performance
 
-    log::info!("Class A Object::list() in list_object()");
+    log::debug!("Class A Object::list() in list_object()");
     let object_chunks = Object::list(bucket, list_prefix_request(name.to_string()))
         .and_then(|objs_stream| objs_stream.try_collect::<Vec<_>>())
         .await?;
@@ -381,7 +380,7 @@ pub async fn create_object(
     body: Vec<u8>,
     mime_type: MimeType,
 ) -> Result<Object> {
-    log::info!("Class A Object::create() in create_object()");
+    log::debug!("Class A Object::create() in create_object()");
     let object = Object::create(bucket, body, path, mime_type.into()).await?;
     Ok(object)
 }
@@ -405,7 +404,7 @@ pub async fn create_bucket(bucket: &str) -> Result<Bucket> {
         ..Default::default()
     };
 
-    log::info!("Class A Bucket::create() in create_bucket()");
+    log::debug!("Class A Bucket::create() in create_bucket()");
     let bucket = Bucket::create(&new_bucket).await?;
     Ok(bucket)
 }
