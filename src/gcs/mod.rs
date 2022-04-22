@@ -45,9 +45,9 @@ lazy_static! {
 
 #[derive(Debug, PartialEq)]
 pub struct GcsFile {
-    bucket: String,
-    name: String,
-    trailing_slash: bool,
+    pub bucket: String,
+    pub name: String,
+    pub trailing_slash: bool,
 }
 
 impl GcsFile {
