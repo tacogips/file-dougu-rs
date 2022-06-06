@@ -40,7 +40,55 @@ pub enum FileUtilGcsError {
 pub type Result<T> = std::result::Result<T, FileUtilGcsError>;
 
 lazy_static! {
-    static ref GCS_BUCKET_RE: Regex = Regex::new(r"gs://(?P<bucket>.*?)/(?P<name>.*)").unwrap();
+    static ref GCS_BUCKET_RE: Regex = Regex::new(r"gs://(?P<bucket>[^/]*)/?(?P<name>.*)").unwrap();
+}
+
+#[derive(Debug, PartialEq)]
+pub struct GcsBucket {
+    pub bucket: String,
+}
+
+impl GcsBucket {
+    fn parse_bucket_and_name_from_url(url: &Url) -> Result<String> {
+        GCS_BUCKET_RE.captures(url.as_str()).map_or(
+            Err(FileUtilGcsError::GcsInvalidBucketPathError(
+                url.as_str().to_string(),
+            )),
+            |captured| {
+                let bucket = captured["bucket"].to_string();
+
+                let bucket = if bucket.ends_with("/") {
+                    bucket[0..bucket.len() - 1].to_string()
+                } else {
+                    bucket
+                };
+                if bucket.is_empty() {
+                    Err(FileUtilGcsError::InvalidGcsUrl(url.as_str().to_string()))
+                } else {
+                    Ok(bucket)
+                }
+            },
+        )
+    }
+
+    pub fn new_with_url(url: &Url) -> Result<Self> {
+        let url_str = url.as_str();
+
+        if !url_str.starts_with("gs://") {
+            return Err(FileUtilGcsError::GcsInvalidBucketPathError(format!(
+                "is not a valid gs address  {}",
+                url_str
+            )));
+        }
+        let bucket = Self::parse_bucket_and_name_from_url(url)?;
+
+        Ok(Self { bucket })
+    }
+
+    pub fn new(maybe_url_string: String) -> Result<Self> {
+        let url = Url::parse(maybe_url_string.as_str())?;
+        Self::new_with_url(&url)
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -59,6 +107,7 @@ impl GcsFile {
             |captured| {
                 let bucket = captured["bucket"].to_string();
                 let name = captured["name"].to_string();
+
                 if bucket.is_empty() || name.is_empty() || name.starts_with("/") {
                     Err(FileUtilGcsError::InvalidGcsUrl(url.as_str().to_string()))
                 } else {
@@ -433,25 +482,10 @@ pub async fn find_bucket(bucket: &str) -> Result<Option<Bucket>> {
 #[cfg(test)]
 mod tests {
 
-    use super::GcsFile;
-    use dotenv::dotenv;
+    use super::*;
     use lazy_static::lazy_static;
-    use std::env;
     use std::sync::Mutex;
     use url::Url;
-    use uuid::Uuid;
-
-    macro_rules! env_value {
-        ($env_key:expr) => {
-            env::var($env_key).expect(&format!("env {} not found.", $env_key))
-        };
-    }
-    const FILE_UTIL_TEST_BUCKET_NAME_ENV: &str = "FILE_UTIL_TEST_GCS_BUCKET_ENV";
-
-    fn test_bucket_name() -> String {
-        dotenv::from_filename(".env_test").ok();
-        env_value!(FILE_UTIL_TEST_BUCKET_NAME_ENV)
-    }
 
     lazy_static! {
         static ref TEST_BUCKET_MUTEX: Mutex<()> = Mutex::new(());
@@ -583,5 +617,53 @@ mod tests {
                 trailing_slash: true,
             }
         );
+    }
+
+    #[test]
+    fn parse_gcs_file_root_dir() {
+        let url = Url::parse("gs://zdb_test").unwrap();
+        let result = GcsFile::new_with_url(&url);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_gcs_bucket_root_dir() {
+        let url = Url::parse("gs://zdb_test").unwrap();
+        let result = GcsBucket::new_with_url(&url);
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+
+        assert_eq!(
+            result,
+            GcsBucket {
+                bucket: "zdb_test".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_gcs_invalid_bucket_root_dir1() {
+        let url = Url::parse("gs://").unwrap();
+        let result = GcsBucket::new_with_url(&url);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_gcs_invalid_bucket_root_dir2() {
+        let url = Url::parse("gs:///").unwrap();
+        let result = GcsBucket::new_with_url(&url);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_gcs_invalid() {
+        let url = Url::parse("gs://zdb_test//").unwrap();
+        let result = GcsFile::new_with_url(&url);
+
+        assert!(result.is_err());
     }
 }
